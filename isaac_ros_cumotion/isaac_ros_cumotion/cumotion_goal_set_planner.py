@@ -80,6 +80,7 @@ class CumotionGoalSetPlannerServer(CumotionActionServer):
                     k.orientation.z,
                 ]
             )
+        print("DEBUG:", poses)
         if len(poses) == 0:
             self.get_logger().error('No goal pose found')
             return False, MoveItErrorCodes.INVALID_GOAL_CONSTRAINTS, poses

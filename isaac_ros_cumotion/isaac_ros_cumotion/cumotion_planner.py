@@ -710,6 +710,8 @@ class CumotionActionServer(Node):
             else:
                 start_state = current_joint_state
 
+        link_pose = {}
+
         if len(plan_req.goal_constraints[0].joint_constraints) > 0:
             self.get_logger().info('Calculating goal pose from Joint target')
             goal_config = [
@@ -728,63 +730,73 @@ class CumotionActionServer(Node):
                 )
             )
             goal_pose = self.motion_gen.compute_kinematics(goal_state).ee_pose.clone()
+            link_pose = self.motion_gen.compute_kinematics(goal_state).link_pose
         elif (
             len(plan_req.goal_constraints[0].position_constraints) > 0
             and len(plan_req.goal_constraints[0].orientation_constraints) > 0
         ):
             self.get_logger().info('Using goal from Pose')
 
-            position = (
-                plan_req.goal_constraints[0]
-                .position_constraints[0]
-                .constraint_region.primitive_poses[0]
-                .position
-            )
-            position = [position.x, position.y, position.z]
-            orientation = plan_req.goal_constraints[0].orientation_constraints[0].orientation
-            orientation = [orientation.w, orientation.x, orientation.y, orientation.z]
-            pose_list = position + orientation
-            goal_pose = Pose.from_list(pose_list, tensor_args=self.tensor_args)
+            print(plan_req.goal_constraints)
 
-            # Check if link names match:
-            position_link_name = plan_req.goal_constraints[0].position_constraints[0].link_name
-            orientation_link_name = (
-                plan_req.goal_constraints[0].orientation_constraints[0].link_name
-            )
-            plan_link_name = self.motion_gen.kinematics.ee_link
-            if position_link_name != orientation_link_name:
-                self.get_logger().error(
-                    'Link name for Target Position "'
-                    + position_link_name
-                    + '" and Target Orientation "'
-                    + orientation_link_name
-                    + '" do not match'
+            for i, goal_constraint in enumerate(plan_req.goal_constraints):
+                # Check if link names match:
+                position_link_name = goal_constraint.position_constraints[0].link_name
+                orientation_link_name = (
+                    goal_constraint.orientation_constraints[0].link_name
                 )
-                result.error_code.val = MoveItErrorCodes.INVALID_LINK_NAME
-                return result
-            if position_link_name != plan_link_name:
-                self.get_logger().error(
-                    'Link name for Target Pose "'
-                    + position_link_name
-                    + '" and Planning frame "'
-                    + plan_link_name
-                    + '" do not match, relaunch node with tool_frame = '
-                    + position_link_name
+                plan_link_name = self.motion_gen.kinematics.ee_link
+                plan_multi_link_names = self.motion_gen.kinematics.link_names
+                if position_link_name != orientation_link_name:
+                    self.get_logger().error(
+                        'Link name for Target Position "'
+                        + position_link_name
+                        + '" and Target Orientation "'
+                        + orientation_link_name
+                        + '" do not match'
+                    )
+                    result.error_code.val = MoveItErrorCodes.INVALID_LINK_NAME
+                    return result
+                if position_link_name not in plan_multi_link_names:
+                    self.get_logger().error(
+                        'Link name for Target Pose "'
+                        + position_link_name
+                        + '" are not in the multi ee Planning frame "'
+                        + plan_multi_link_names
+                        + '", relaunch node with tool_frame = '
+                        + plan_multi_link_names
+                    )
+                    result.error_code.val = MoveItErrorCodes.INVALID_LINK_NAME
+                    return result
+                position = (
+                    goal_constraint
+                    .position_constraints[0]
+                    .constraint_region.primitive_poses[0]
+                    .position
                 )
-                result.error_code.val = MoveItErrorCodes.INVALID_LINK_NAME
-                return result
+                position = [position.x, position.y, position.z]
+                orientation = goal_constraint.orientation_constraints[0].orientation
+                orientation = [orientation.w, orientation.x, orientation.y, orientation.z]
+                pose_list = position + orientation
+                link_pose[position_link_name] = Pose.from_list(pose_list, tensor_args=self.tensor_args)
+                if position_link_name == plan_link_name:
+                    goal_pose = Pose.from_list(pose_list, tensor_args=self.tensor_args)
         else:
             self.get_logger().error('Goal constraints not supported')
         with self.lock:
             self.planner_busy = True
 
+        print("DEBUG: [goal_pose]", goal_pose)
+        print("DEBUG: [link_pose]", link_pose)
         self.motion_gen.reset(reset_seed=False)
         motion_gen_result = self.motion_gen.plan_single(
             start_state,
             goal_pose,
             MotionGenPlanConfig(max_attempts=self.__max_attempts, enable_graph_attempt=1,
                                 time_dilation_factor=time_dilation_factor),
+            link_pose,
         )
+        # print("DEBUG: [motion_gen_result]", motion_gen_result)
         with self.lock:
             self.planner_busy = False
         result = MoveGroup.Result()
